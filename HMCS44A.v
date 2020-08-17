@@ -444,7 +444,7 @@ always @(posedge clk_mcu)
       10'b00_0011_1100: counter <= A; // lta
       10'b01_0111_????: if (~odf) counter <= imm; // lti
       10'b00_1010_0101: TF <= 1'b1; // setf
-		  10'b10_1010_0101: TF <= 1'b0; // retf
+      10'b10_1010_0101: TF <= 1'b0; // retf
     endcase
   end
 
@@ -487,13 +487,14 @@ always @(posedge clk)
     endcase
 
 // stack
-always @(posedge clk_mcu)
+always @(posedge clk_mcu) begin
   casez (nxtop)
     10'b11_1010_0111, // rtn
     10'b11_1010_0100: { ST[0], ST[1], ST[2] } <= { ST[1], ST[2], ST[3] };
-    10'b11_11??_????:
-      if (status | (IR & IE)) { ST[0], ST[1], ST[2], ST[3] } <= { PC_page, PC_addr_next, ST[0], ST[1], ST[2] };
+    10'b11_11??_????: if (status) { ST[0], ST[1], ST[2], ST[3] } <= { PC_page, PC_addr_next, ST[0], ST[1], ST[2] }; // cal
   endcase
+  if (IR & IE) { ST[0], ST[1], ST[2], ST[3] } <= { PC_page, PC_addr_next, ST[0], ST[1], ST[2] };
+end
 
 // PC_addr_next
 reg [5:0] PC_addr_next;
