@@ -535,7 +535,7 @@ always @(posedge clk_mcu)
 
     end
 
- 	end
+  end
   else
     { PC_page, PC_addr } <= 11'h7ff;
 
