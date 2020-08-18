@@ -18,11 +18,16 @@ module HMCS44A(
   output [3:0] o_R3,
 
   input i_int0,
-  input i_int1
+  input i_int1,
+
+  input i_rom_setup,
+  input i_rom_setup_clk,
+  input [11:0] i_rom_addr,
+  input [9:0] i_rom_data
+
 );
 
 reg [3:0] R[7:0];
-
 assign o_R0 = R[0];
 assign o_R1 = R[1];
 assign o_R2 = R[2];
@@ -33,8 +38,9 @@ reg [3:0] RAM[159:0];
 
 reg [4:0] PC_page;
 reg [5:0] PC_addr;
+reg [5:0] PC_addr_next;
 reg [10:0] ST[3:0]; // stack
-reg [3:0] A, B, X, Y, SPX, SPY;
+reg [3:0] A, B, X, Y, SPX, SPY; // registers
 reg alu_c, carry, status;
 reg [9:0] op;
 reg [3:0] RAM_din;
@@ -44,32 +50,44 @@ reg [7:0] RAM_addr;
 reg [3:0] mask;
 reg [1:0] alu_op;
 reg [3:0] alu_a, alu_b, alu_out;
-reg [3:0] counter;
 reg [5:0] prescaler;
-reg po; // prescaler, overflow output pulse
+reg [3:0] counter;
+reg PO; // prescaler, overflow output pulse
+reg CO; // counter overflow
+reg cpulse; // counter pulse
 reg CF; // 0 = timer mode, 1 = counter mode (i_int1)
 reg TF; // timer/counter interrupt mask
 reg IF0, IF1; // input interrupt masks
 reg IE; // interrupt enable
 reg IR; // interrupt request
+reg PG1; // pattern generation cycle 1
+reg PG2; // pattern generation cycle 2
+reg [3:0] buffer; // ram buffer
+reg [9:0] nxtop; // next operation code
 
 wire [10:0] PC = { PC_page, PC_addr };
 wire [3:0] imm = { op[0], op[1], op[2], op[3] };
 wire [2:0] p3 = op[2:0];
+
+wire [11:0] PAT_addr = { op[2], { op[1:0], carry, B[3:2] } | PC_page, { B[1:0], A } };
+wire [11:0] ROM_addr = op[9:3] == 7'b1101101 ? PAT_addr : { 1'b0, PC };
 
 reg [1:0] clk_div;
 wire clk_mcu = clk_div[1]; // 100
 always @(posedge clk)
   clk_div <= clk_div + 2'b1;
 
-// PAT
-reg PAT;
-always @*
-  PAT = (op[9:3] == 7'b1101101) ? 1'b1 : 1'b0;
+always @(posedge i_rom_setup_clk)
+  if (i_rom_setup)
+    ROM[i_rom_addr] <= i_rom_data;
 
-reg odf; // op data flag
+// PG1
+always @*
+  PG1 = (op[9:3] == 7'b1101101) ? 1'b1 : 1'b0;
+
+// PG2
 always @(posedge clk_mcu)
-  odf <= PAT;
+  PG2 <= PG1;
 
 // D out
 always @(posedge clk_mcu)
@@ -96,7 +114,7 @@ always @*
 always @*
   if (reset)
     status = 1'b1;
-  else if (~odf)
+  else if (~PG2)
     casez (op)
       10'b11_11??_????, // cal
       10'b01_11??_????: status = 1'b1; // br
@@ -212,15 +230,11 @@ always @(posedge clk)
     default: alu_op <= 2'b00;
   endcase
 
-wire [11:0] mpc = { op[2], { op[1:0], carry, B[3:2] } | PC_page, { B[1:0], A } };
-wire [11:0] ROM_addr = op[9:3] == 7'b1101101 ? mpc : { 1'b0, PC };
-
 // op
 always @(posedge clk)
   nxtop <= ROM[ROM_addr];
 
 // next op
-reg [9:0] nxtop;
 always @(posedge clk_mcu)
   op <= nxtop;
 
@@ -229,7 +243,6 @@ always @(posedge clk)
   RAM_dout <= RAM[RAM_addr];
 
 // RAM buffer
-reg [3:0] buffer;
 always @(negedge clk_mcu)
   buffer <= RAM_dout;
 
@@ -259,7 +272,7 @@ always @*
 
 // RAM_we
 always @*
-  if (~odf)
+  if (~PG2)
     casez (op)
       10'b10_0010_00??, // xmb
       10'b10_0000_10??, // xma
@@ -274,7 +287,7 @@ always @*
 
 // A
 always @(posedge clk_mcu)
-  if (~odf)
+  if (~PG2)
     casez (op)
       10'b00_0111_????: A <= imm; // lai
       10'b00_0011_0100, // am
@@ -302,7 +315,7 @@ always @(posedge clk_mcu)
 
 // B
 always @(posedge clk_mcu)
-  if (~odf)
+  if (~PG2)
     casez (op)
       10'b00_0110_0000: B <= A; // lba
       10'b10_0010_00??, // xmb
@@ -318,7 +331,7 @@ always @(posedge clk_mcu)
 
 // X
 always @(posedge clk_mcu)
-  if (~odf)
+  if (~PG2)
     casez (op)
       10'b01_0001_0101, // lmady
       10'b01_0001_0001, // lmaiy
@@ -333,7 +346,7 @@ always @(posedge clk_mcu)
 
 // Y
 always @(posedge clk_mcu)
-  if (~odf)
+  if (~PG2)
     casez (op)
       10'b10_0010_001?, // xmb
       10'b10_0000_101?, // xma
@@ -353,7 +366,7 @@ always @(posedge clk_mcu)
 
 // SPX
 always @(posedge clk_mcu)
-  if (~odf)
+  if (~PG2)
     casez (op)
       10'b00_0010_00?1, // lbm
       10'b01_0001_0101, // lmady
@@ -366,7 +379,7 @@ always @(posedge clk_mcu)
 
 // SPY
 always @(posedge clk_mcu)
-  if (~odf)
+  if (~PG2)
     casez (op)
       10'b00_0010_001?, // lbm
       10'b10_0010_001?, // xmb
@@ -380,9 +393,9 @@ always @(posedge clk_mcu)
 wire [3:0] src = op[5] ? B : A;
 always @(posedge clk_mcu) begin
   if (i_R0 != R[0]) R[0] <= i_R0;
-  //if (i_R1 != 4'b0) R[1] <= i_R1;
-  //if (i_R2 != 4'b0) R[2] <= i_R2;
-  //if (i_R3 != 4'b0) R[3] <= i_R3;
+  if (i_R1 != R[1]) R[1] <= i_R1;
+  if (i_R2 != R[2]) R[2] <= i_R2;
+  if (i_R3 != R[3]) R[3] <= i_R3;
   casez (op)
     10'b10_11?0_0???: // lra/lrb
       R[p3] <= src;
@@ -410,7 +423,7 @@ always @*
 always @(posedge clk_mcu)
   if (~reset) begin
     prescaler <= prescaler + 6'b1;
-    if (~odf)
+    if (~PG2)
       casez (op)
         10'b01_0111_????, // lti
         10'b00_0011_1100: // lta
@@ -422,37 +435,45 @@ always @(posedge clk_mcu)
 
 // prescaler overflow
 always @(posedge clk)
-  po <= prescaler == 6'b111111;
+  PO <= prescaler == 6'b111111;
 
 // counter pulse
-reg cpulse;
 always @(posedge clk_mcu)
-  cpulse <= (i_int1 & CF) | (~CF & po);
+  cpulse <= (i_int1 & CF) | (~CF & PO);
 
 // counter
 always @(posedge clk_mcu)
   if (reset) begin
     counter <= 0;
-    TF <= 1'b1;
+    CO <= 0;
   end
   else begin
     if (cpulse) begin
       counter <= counter + 4'b1;
-      if (counter == 4'b1111) TF <= 1'b1;
+      CO <= counter == 4'b1111;
     end
     casez (op)
       10'b00_0011_1100: counter <= A; // lta
-      10'b01_0111_????: if (~odf) counter <= imm; // lti
-      10'b00_1010_0101: TF <= 1'b1; // setf
-      10'b10_1010_0101: TF <= 1'b0; // retf
+      10'b01_0111_????: if (~PG2) counter <= imm; // lti
     endcase
   end
 
-// IR, IE
+// IR, IE, masks: IF0, IF1, TF
 always @(posedge clk)
-  if ((i_int0 & ~IF0) | (i_int1 & ~IF1) | ~TF)
+if (~reset)
+  if (i_int0 & ~IF0) begin
     IR <= 1'b1;
-  else if (IR & IE) begin
+    IF0 <= 1'b1;
+  end
+  else if (i_int1 & ~IF1) begin
+    IR <= 1'b1;
+    IF1 <= 1'b1;
+  end
+  else if (CO & ~TF) begin
+    IR <= 1'b1;
+    TF <= 1'b1;
+  end
+  else if (IR & IE) begin // int handled
     IR <= 1'b0;
     IE <= 1'b0;
   end
@@ -461,7 +482,19 @@ always @(posedge clk)
       10'b11_1010_0100, // rtni
       10'b00_1010_0100: IE <= 1'b1; // seie
       10'b10_1010_0100: IE <= 1'b0; // reie
+      10'b00_1010_0010: IF0 <= 1'b1; // seif0
+      10'b10_1010_0010: IF0 <= 1'b0; // reif0
+      10'b00_1010_0000: IF1 <= 1'b1; // seif1
+      10'b10_1010_0000: IF1 <= 1'b0; // reif1
+      10'b00_1010_0101: TF <= 1'b1; // setf
+    10'b10_1010_0101: TF <= 1'b0; // retf
     endcase
+  else begin
+    IR <= 1'b0;
+    TF <= 1'b1;
+    IF0 <= 1'b1;
+    IF1 <= 1'b1;
+  end
 
 // CF
 always @(posedge clk_mcu)
@@ -469,22 +502,6 @@ always @(posedge clk_mcu)
     10'b00_1010_0001: CF <= 1'b1; // secf
     10'b10_1010_0001: CF <= 1'b0; // recf
   endcase
-
-// IF0
-always @(posedge clk)
-  if (clk_mcu)
-    casez (op)
-      10'b00_1010_0010: IF0 <= 1'b1; // seif0
-      10'b10_1010_0010: IF0 <= 1'b0; // reif0
-    endcase
-
-// IF1
-always @(posedge clk)
-  if (clk_mcu)
-    casez (op)
-      10'b00_1010_0000: IF1 <= 1'b1; // seif1
-      10'b10_1010_0000: IF1 <= 1'b0; // reif1
-    endcase
 
 // stack
 always @(posedge clk_mcu) begin
@@ -497,7 +514,6 @@ always @(posedge clk_mcu) begin
 end
 
 // PC_addr_next
-reg [5:0] PC_addr_next;
 always @*
   PC_addr_next = {
     PC_addr[4:0],
@@ -510,7 +526,7 @@ always @*
 always @(posedge clk_mcu)
   if (~reset) begin
 
-    if (~PAT) begin
+    if (~PG1) begin
 
       if (IR & IE)
 
@@ -525,7 +541,7 @@ always @(posedge clk_mcu)
           10'b11_11??_????: if (status) { PC_page, PC_addr } <= { 5'd0, nxtop[5:0] }; // cal
           10'b11_1010_0111, // rtn
           10'b11_1010_0100: { PC_page, PC_addr } <= ST[0]; // rtni
-          10'b11_0110_0???: { PC_page, PC_addr } <= mpc[10:0]; // tbr
+          10'b11_0110_0???: { PC_page, PC_addr } <= PAT_addr[10:0]; // tbr
           default: PC_addr <= PC_addr_next;
         endcase
 
